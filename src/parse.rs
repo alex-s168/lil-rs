@@ -174,7 +174,8 @@ impl ExprKind<'_> {
 
             ExprKind::Amend { .. } => { false },
 
-            ExprKind::EachElem { arr, .. } => { arr.kind.is_lexpr() },
+            // this is weird, but it ammends in the official lil linterpreter
+            ExprKind::EachElem { .. } => { false },
 
             ExprKind::Binary { .. } => { false },
 
