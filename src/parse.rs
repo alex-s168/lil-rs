@@ -64,6 +64,16 @@ impl<'src> Expr<'src> {
                 left.traverse(each);
                 right.traverse(each);
             },
+
+            ExprKind::Unary { val, .. } => {
+                val.traverse(each);
+            }
+
+            ExprKind::Call { func: _, args } => {
+                for arg in args {
+                    arg.traverse(each);
+                }
+            }
         }
     }
 }
@@ -89,7 +99,16 @@ pub enum BinOp {
     Dict,
     Take,
     Drop,
+    CommaJoin,
+    TableJoin,
     Join,
+    Limit,
+    Window,
+    In,
+    Unless,
+    Cross,
+    Parse,
+    Format,
 }
 
 fn tok_to_bin(tok: &lex::Token) -> Option<BinOp> {
@@ -113,7 +132,83 @@ fn tok_to_bin(tok: &lex::Token) -> Option<BinOp> {
         lex::Token::OpDict  => { Some(BinOp::Dict) },
         lex::Token::OpTake  => { Some(BinOp::Take) },
         lex::Token::OpDrop  => { Some(BinOp::Drop) },
-        lex::Token::OpComma => { Some(BinOp::Join) },
+        lex::Token::OpComma => { Some(BinOp::CommaJoin) },
+        lex::Token::OpJoin => { Some(BinOp::TableJoin) },
+        lex::Token::OpLimit => { Some(BinOp::Limit) },
+        lex::Token::OpWindow => { Some(BinOp::Window) },
+        lex::Token::OpIn => { Some(BinOp::In) },
+        lex::Token::OpUnless => { Some(BinOp::Unless) },
+        lex::Token::OpCross => { Some(BinOp::Cross) },
+        lex::Token::OpParse => { Some(BinOp::Parse) },
+        lex::Token::OpFormat => { Some(BinOp::Format) },
+        
+        _ => { None }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnaryOp {
+    Negate,
+    Not,
+
+    Floor,
+    Cos,
+    Sin,
+    Tan,
+    Exp,
+    Ln,
+    Sqrt,
+    Sum,
+    Prod,
+    Raze,
+    Min,
+    Max,
+    Typeof,
+    Count,
+    First,
+    Last,
+    Range,
+    Keys,
+    List,
+    Flip,
+    Rows,
+    Cols,
+    Table,
+    Mag,
+    Heading,
+    Unit,
+}
+
+fn tok_to_uny(tok: &lex::Token) -> Option<UnaryOp> {
+    match tok {
+        lex::Token::OpMinus => { Some(UnaryOp::Negate) },
+        lex::Token::OpNot => { Some(UnaryOp::Not) },
+        lex::Token::OpFloor => { Some(UnaryOp::Floor) },
+        lex::Token::OpCos => { Some(UnaryOp::Cos) },
+        lex::Token::OpSin => { Some(UnaryOp::Sin) },
+        lex::Token::OpTan => { Some(UnaryOp::Tan) },
+        lex::Token::OpExp => { Some(UnaryOp::Exp) },
+        lex::Token::OpLn => { Some(UnaryOp::Ln) },
+        lex::Token::OpSqrt => { Some(UnaryOp::Sqrt) },
+        lex::Token::OpSum => { Some(UnaryOp::Sum) },
+        lex::Token::OpProd => { Some(UnaryOp::Prod) },
+        lex::Token::OpRaze => { Some(UnaryOp::Raze) },
+        lex::Token::OpMin => { Some(UnaryOp::Min) },
+        lex::Token::OpMax => { Some(UnaryOp::Max) },
+        lex::Token::OpTypeof => { Some(UnaryOp::Typeof) },
+        lex::Token::OpCount => { Some(UnaryOp::Count) },
+        lex::Token::OpFirst => { Some(UnaryOp::First) },
+        lex::Token::OpLast => { Some(UnaryOp::Last) },
+        lex::Token::OpRange => { Some(UnaryOp::Range) },
+        lex::Token::OpKeys => { Some(UnaryOp::Keys) },
+        lex::Token::OpList => { Some(UnaryOp::List) },
+        lex::Token::OpFlip => { Some(UnaryOp::Flip) },
+        lex::Token::OpRows => { Some(UnaryOp::Rows) },
+        lex::Token::OpCols => { Some(UnaryOp::Cols) },
+        lex::Token::OpTable => { Some(UnaryOp::Table) },
+        lex::Token::OpMag => { Some(UnaryOp::Mag) },
+        lex::Token::OpHeading => { Some(UnaryOp::Heading) },
+        lex::Token::OpUnit => { Some(UnaryOp::Unit) },
 
         _ => { None }
     }
@@ -146,14 +241,68 @@ pub enum ExprKind<'src> {
         val: Box<Expr<'src>>
     },
 
-    EachElem { arr: Box<Expr<'src>>, was_dot_notation: bool },
+    EachElem { 
+        arr: Box<Expr<'src>>, 
+        was_dot_notation: bool 
+    },
 
-    Binary { left: Box<Expr<'src>>, right: Box<Expr<'src>>, kind: BinOp },
+    /** CAN ALSO BE ARRAY INDEX OR FOREACH */
+    Call {
+        func: Box<Expr<'src>>,
+        args: Vec<Expr<'src>>,
+    },
+
+    Binary { 
+        left: Box<Expr<'src>>, 
+        right: Box<Expr<'src>>, 
+        kind: BinOp 
+    },
+
+    Unary {
+        val: Box<Expr<'src>>,
+        op: UnaryOp,
+    },
 
     EmptyList,
 }
 
-impl ExprKind<'_> {
+impl<'src> ExprKind<'src> {
+    pub fn as_each_elem(&self) -> Option<(&Box<Expr<'src>>, bool)> {
+        match self {
+            ExprKind::EachElem { arr, was_dot_notation } => {
+                Some((arr, *was_dot_notation))
+            },
+
+            ExprKind::Call { func, args } => {
+                if args.len() == 0 {
+                    Some((func, false))
+                } else {
+                    None
+                }
+            }
+
+            _ => None
+        }
+    }
+
+    pub fn as_subscript(&self) -> Option<(&Expr<'src>, &Expr<'src>, bool)> {
+        match self {
+            ExprKind::Subscript { arr, idx, was_dot_notation } => {
+                Some((arr, idx, *was_dot_notation))
+            },
+
+            ExprKind::Call { func, args } => {
+                if args.len() == 1 {
+                    Some((func, &args[0], false))
+                } else {
+                    None
+                }
+            }
+
+            _ => None
+        }
+    }
+
     /** can this expression be assigned to? */
     pub fn is_lexpr(&self) -> bool {
         match self {
@@ -178,8 +327,11 @@ impl ExprKind<'_> {
             ExprKind::EachElem { .. } => { false },
 
             ExprKind::Binary { .. } => { false },
+            ExprKind::Unary { .. } => { false },
 
             ExprKind::EmptyList => { false },
+
+            ExprKind::Call { func: _, args } => { args.len() == 1 }
         }
     }
 }
@@ -238,6 +390,13 @@ where
                 .labelled("number");
 
         let atom = with_src!(padded!(choice((
+            with_src!(ident.clone())
+                .then(parse_expr.clone()
+                    .repeated()
+                    .collect::<Vec<_>>()
+                    .delimited_by(padded!(simple!(SquareOpen)), padded!(simple!(SquareClose))))
+                .map(|(ident, args)| ExprKind::Call { func: Box::new(ident), args }),
+
             ident.clone(),
             num.clone(),
 
@@ -297,7 +456,20 @@ where
                 }, into_range!(e))
             });
 
-        let assign = with_src!(binary.clone()
+        let unary = padded!(any_ref::<_, extra::Err<Rich<'src, lex::Token<'src>>>>()
+                .filter(|x| tok_to_uny(x).is_some())
+                .map(|x| tok_to_uny(&x).unwrap()))
+            .labelled("unary operation")
+            .repeated()
+            .foldr_with(binary,
+                |op, val, e| {
+                    Expr::with_src(ExprKind::Unary {
+                        val: Box::new(val),
+                        op
+                    }, into_range!(e))
+                });
+
+        let assign = with_src!(unary.clone()
             .then_ignore(padded!(simple!(Colon)))
             .then(parse_expr.clone())
             .map(|(a, b)| {
@@ -306,7 +478,7 @@ where
                 } else {
                     ExprKind::Amend { src: Box::new(a), val: Box::new(b) }
                 }
-            })).or(binary);
+            })).or(unary);
 
         assign.boxed()
     })

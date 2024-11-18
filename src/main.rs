@@ -89,29 +89,23 @@ fn main() {
             std::process::exit(1);
         });
 
-    let style_warn = ReportKind::Custom("Style", ariadne::Color::BrightMagenta);
+    let style_warn = ReportKind::Custom("Style", Color::BrightMagenta);
 
     expr.traverse(&mut |node| {
-        match node.kind() {
-            ExprKind::EachElem { arr, was_dot_notation } => {
-                if *was_dot_notation {
-                    if let ExprKind::EachElem { arr: _, was_dot_notation: _ } = arr.kind() {
-                        let range = combine_ranges(
-                            &node.location().unwrap(),
-                            &arr.location().unwrap());
-                        let range = SimpleSpan::new(range.start, range.end);
+        if let Some((arr, was_dot_notation)) = node.kind().as_each_elem() {
+            if was_dot_notation && arr.kind().as_each_elem().is_some() {
+                let range = combine_ranges(
+                    &node.location().unwrap(),
+                    &arr.location().unwrap());
+                let range = SimpleSpan::new(range.start, range.end);
 
-                        failure(
-                            "you should use the arr[] syntax for nested eachs instead".to_string(),
-                            style_warn,
-                            ("here".to_string(), range),
-                            [],
-                            &src);
-                    }
-                }
-            },
-
-            _ => {}
+                failure(
+                    "you should use the arr[] syntax for nested eachs instead".to_string(),
+                    style_warn,
+                    ("here".to_string(), range),
+                    [],
+                    &src);
+            }
         }
     });
 

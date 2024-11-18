@@ -33,7 +33,6 @@ pub enum Token<'src> {
     KwLocal,
 
     OpMinus,
-    OpNot,
     OpPlus,
     OpMul,
     OpDiv,
@@ -54,6 +53,42 @@ pub enum Token<'src> {
     OpTake,
     OpDrop,
     OpComma,
+    OpJoin,
+    OpLimit,
+    OpWindow,
+    OpIn,
+    OpUnless,
+    OpCross,
+    OpParse,
+    OpFormat,
+
+    OpNot,
+    OpFloor,
+    OpCos,
+    OpSin,
+    OpTan,
+    OpExp,
+    OpLn,
+    OpSqrt,
+    OpSum,
+    OpProd,
+    OpRaze,
+    OpMin,
+    OpMax,
+    OpTypeof,
+    OpCount,
+    OpFirst,
+    OpLast,
+    OpRange,
+    OpKeys,
+    OpList,
+    OpFlip,
+    OpRows,
+    OpCols,
+    OpTable,
+    OpMag,
+    OpHeading,
+    OpUnit,
 
     ParenOpen,
     ParenClose,
@@ -117,6 +152,41 @@ impl std::fmt::Display for Token<'_> {
             Token::OpDict => { "dict".to_string() }
             Token::OpTake => { "take".to_string() }
             Token::OpDrop => { "drop".to_string() }
+            Token::OpJoin => { "join".to_string() }
+            Token::OpLimit => "limit".to_string(),
+            Token::OpWindow => "window".to_string(),
+            Token::OpIn => "in".to_string(),
+            Token::OpUnless => "unless".to_string(),
+            Token::OpCross => "cross".to_string(),
+            Token::OpParse => "parse".to_string(),
+            Token::OpFormat => "format".to_string(),
+
+            Token::OpFloor => "floor".to_string(),
+            Token::OpCos => "cos".to_string(),
+            Token::OpSin => "sin".to_string(),
+            Token::OpTan => "tan".to_string(),
+            Token::OpExp => "exp".to_string(),
+            Token::OpLn => "ln".to_string(),
+            Token::OpSqrt => "sqrt".to_string(),
+            Token::OpSum => "sum".to_string(),
+            Token::OpProd => "prod".to_string(),
+            Token::OpRaze => "raze".to_string(),
+            Token::OpMin => "min".to_string(),
+            Token::OpMax => "max".to_string(),
+            Token::OpTypeof => "typeof".to_string(),
+            Token::OpCount => "count".to_string(),
+            Token::OpFirst => "first".to_string(),
+            Token::OpLast => "last".to_string(),
+            Token::OpRange => "range".to_string(),
+            Token::OpKeys => "keys".to_string(),
+            Token::OpList => "list".to_string(),
+            Token::OpFlip => "flip".to_string(),
+            Token::OpRows => "rows".to_string(),
+            Token::OpCols => "cols".to_string(),
+            Token::OpTable => "table".to_string(),
+            Token::OpMag => "mag".to_string(),
+            Token::OpHeading => "heading".to_string(),
+            Token::OpUnit => "unit".to_string(),
 
             Token::ParenOpen => { "(".to_string() }
             Token::ParenClose => { ")".to_string() }
@@ -162,11 +232,46 @@ impl Token<'_> {
             Token::OpComma => { true }
 
             Token::OpSplit |
-            Token::OpFuse  |
-            Token::OpLike  |
-            Token::OpDict  |
-            Token::OpTake  |
-            Token::OpDrop  => { true }
+            Token::OpFuse |
+            Token::OpLike |
+            Token::OpDict |
+            Token::OpTake |
+            Token::OpDrop |
+            Token::OpJoin |
+            Token::OpLimit |
+            Token::OpWindow |
+            Token::OpIn |
+            Token::OpUnless |
+            Token::OpCross |
+            Token::OpParse |
+            Token::OpFormat => { true }
+            
+            Token::OpFloor |
+            Token::OpCos |
+            Token::OpSin |
+            Token::OpTan |
+            Token::OpExp |
+            Token::OpLn |
+            Token::OpSqrt |
+            Token::OpSum |
+            Token::OpProd |
+            Token::OpRaze |
+            Token::OpMin |
+            Token::OpMax |
+            Token::OpTypeof |
+            Token::OpCount |
+            Token::OpFirst |
+            Token::OpLast |
+            Token::OpRange |
+            Token::OpKeys |
+            Token::OpList |
+            Token::OpFlip |
+            Token::OpRows |
+            Token::OpCols |
+            Token::OpTable |
+            Token::OpMag |
+            Token::OpHeading |
+            Token::OpUnit => { true }
 
             _ => { false }
         }
@@ -307,6 +412,41 @@ pub fn lexer<'src>() ->
             text::keyword("dict").to(Token::OpDict).boxed(),
             text::keyword("take").to(Token::OpTake).boxed(),
             text::keyword("drop").to(Token::OpDrop).boxed(),
+            text::keyword("join").to(Token::OpJoin).boxed(),
+            text::keyword("limit").to(Token::OpLimit).boxed(),
+            text::keyword("window").to(Token::OpWindow).boxed(),
+            text::keyword("in").to(Token::OpIn).boxed(),
+            text::keyword("unless").to(Token::OpUnless).boxed(),
+            text::keyword("cross").to(Token::OpCross).boxed(),
+            text::keyword("parse").to(Token::OpParse).boxed(),
+            text::keyword("format").to(Token::OpFormat).boxed(),
+        
+            text::keyword("floor").to(Token::OpFloor).boxed(),
+            text::keyword("cos").to(Token::OpCos).boxed(),
+            text::keyword("sin").to(Token::OpSin).boxed(),
+            text::keyword("tan").to(Token::OpTan).boxed(),
+            text::keyword("exp").to(Token::OpExp).boxed(),
+            text::keyword("ln").to(Token::OpLn).boxed(),
+            text::keyword("sqrt").to(Token::OpSqrt).boxed(),
+            text::keyword("sum").to(Token::OpSum).boxed(),
+            text::keyword("prod").to(Token::OpProd).boxed(),
+            text::keyword("raze").to(Token::OpRaze).boxed(),
+            text::keyword("min").to(Token::OpMin).boxed(),
+            text::keyword("max").to(Token::OpMax).boxed(),
+            text::keyword("typeof").to(Token::OpTypeof).boxed(),
+            text::keyword("count").to(Token::OpCount).boxed(),
+            text::keyword("first").to(Token::OpFirst).boxed(),
+            text::keyword("last").to(Token::OpLast).boxed(),
+            text::keyword("range").to(Token::OpRange).boxed(),
+            text::keyword("keys").to(Token::OpKeys).boxed(),
+            text::keyword("list").to(Token::OpList).boxed(),
+            text::keyword("flip").to(Token::OpFlip).boxed(),
+            text::keyword("rows").to(Token::OpRows).boxed(),
+            text::keyword("cols").to(Token::OpCols).boxed(),
+            text::keyword("table").to(Token::OpTable).boxed(),
+            text::keyword("mag").to(Token::OpMag).boxed(),
+            text::keyword("heading").to(Token::OpHeading).boxed(),
+            text::keyword("unit").to(Token::OpUnit).boxed(),
 
             just('(').to(Token::ParenOpen).boxed(),
             just(')').to(Token::ParenClose).boxed(),
