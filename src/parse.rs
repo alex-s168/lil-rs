@@ -67,12 +67,30 @@ impl<'src> Expr<'src> {
 
             ExprKind::Unary { val, .. } => {
                 val.traverse(each);
-            }
+            },
 
             ExprKind::Call { func: _, args } => {
                 for arg in args {
                     arg.traverse(each);
                 }
+            },
+
+            ExprKind::SpreadUnary { arr, .. } => {
+                arr.traverse(each);
+            },
+            
+            ExprKind::ForEach { vars: _, arr, body } => {
+                body.iter().for_each(|x| x.traverse(each));
+                arr.traverse(each);
+            }
+
+            ExprKind::While { cond, body } => {
+                cond.traverse(each);
+                body.iter().for_each(|x| x.traverse(each));
+            }
+
+            ExprKind::Function { name: _, args: _, body } => {
+                body.iter().for_each(|x| x.traverse(each));
             }
         }
     }
@@ -264,6 +282,29 @@ pub enum ExprKind<'src> {
     },
 
     EmptyList,
+
+    /** example: first@arr */
+    SpreadUnary {
+        arr: Box<Expr<'src>>,
+        op: UnaryOp,
+    },
+    
+    ForEach {
+        vars: Vec<&'src str>,
+        arr: Box<Expr<'src>>,
+        body: Vec<Expr<'src>>,
+    },
+
+    While {
+        cond: Box<Expr<'src>>,
+        body: Vec<Expr<'src>>,
+    },
+
+    Function {
+        name: &'src str,
+        args: Vec<&'src str>,
+        body: Vec<Expr<'src>>,
+    }
 }
 
 impl<'src> ExprKind<'src> {
@@ -331,7 +372,15 @@ impl<'src> ExprKind<'src> {
 
             ExprKind::EmptyList => { false },
 
-            ExprKind::Call { func: _, args } => { args.len() == 1 }
+            ExprKind::Call { func: _, args } => { args.len() == 1 },
+
+            ExprKind::SpreadUnary { .. } => { false },
+            
+            ExprKind::ForEach { .. } => { false },
+
+            ExprKind::While { .. } => { false },
+
+            ExprKind::Function { .. } => { false }
         }
     }
 }
@@ -411,7 +460,54 @@ where
             parse_expr.clone()
                 .delimited_by(padded!(simple!(ParenOpen)),
                     padded!(simple!(ParenClose)))
-                .map(|x| ExprKind::Wrap(Box::new(x)))
+                .map(|x| ExprKind::Wrap(Box::new(x))),
+
+            simple!(KwEach)
+                .ignore_then(padded!(select_ref! { lex::Token::Ident(s) => *s })
+                    .repeated()
+                    .collect::<Vec<_>>())
+                .then_ignore(padded!(simple!(KwIn)))
+                .then(parse_expr.clone())
+                .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
+                    .or_not()))
+                .then(parse_expr.clone()
+                    .repeated()
+                    .collect::<Vec<_>>())
+                .then_ignore(padded!(simple!(KwEnd)))
+                .map(|((idents, arr), body)| ExprKind::ForEach {
+                    vars: idents,
+                    arr: Box::new(arr),
+                    body,
+                }),
+
+            simple!(KwWhile)
+                .ignore_then(parse_expr.clone())
+                .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
+                    .or_not()))
+                .then(parse_expr.clone()
+                    .repeated()
+                    .collect::<Vec<_>>())
+                .then_ignore(padded!(simple!(KwEnd)))
+                .map(|(cond, body)| ExprKind::While {
+                    cond: Box::new(cond),
+                    body,
+                }),
+
+            simple!(KwOn)
+                .ignore_then(padded!(select_ref! { lex::Token::Ident(s) => *s }))
+                .then(padded!(select_ref! { lex::Token::Ident(s) => *s })
+                    .repeated()
+                    .collect::<Vec<_>>())
+                .then_ignore(padded!(simple!(KwDo)))
+                .then(parse_expr.clone()
+                    .repeated()
+                    .collect::<Vec<_>>())
+                .then_ignore(padded!(simple!(KwEnd)))
+                .map(|((name, args), body)| ExprKind::Function {
+                    name,
+                    args,
+                    body,
+                }),
         ))));
 
         let arr_access = atom.clone().foldl_with(padded!(parse_expr.clone()
@@ -442,6 +538,11 @@ where
                 Expr::with_src(kind, into_range!(e))
             });
 
+        let match_unary_op = padded!(any_ref::<_, extra::Err<Rich<'src, lex::Token<'src>>>>()
+                .filter(|x| tok_to_uny(x).is_some())
+                .map(|x| tok_to_uny(&x).unwrap()))
+            .labelled("unary operation");
+
         let binary = arr_access.foldl_with(padded!(any_ref::<_, extra::Err<Rich<'src, lex::Token<'src>>>>()
                     .filter(|x| tok_to_bin(x).is_some())
                     .map(|x| tok_to_bin(&x).unwrap()))
@@ -456,10 +557,7 @@ where
                 }, into_range!(e))
             });
 
-        let unary = padded!(any_ref::<_, extra::Err<Rich<'src, lex::Token<'src>>>>()
-                .filter(|x| tok_to_uny(x).is_some())
-                .map(|x| tok_to_uny(&x).unwrap()))
-            .labelled("unary operation")
+        let unary = match_unary_op.clone()
             .repeated()
             .foldr_with(binary,
                 |op, val, e| {
@@ -469,7 +567,19 @@ where
                     }, into_range!(e))
                 });
 
-        let assign = with_src!(unary.clone()
+        let spread = match_unary_op.clone()
+            .then_ignore(padded!(simple!(OpAt)))
+            .repeated()
+            .foldr_with(unary,
+                |op, arr, e| {
+                    Expr::with_src(ExprKind::SpreadUnary {
+                        arr: Box::new(arr),
+                        op,
+                    }, into_range!(e))
+                });
+
+        let pre_assign = spread;
+        let assign = with_src!(pre_assign.clone()
             .then_ignore(padded!(simple!(Colon)))
             .then(parse_expr.clone())
             .map(|(a, b)| {
@@ -478,7 +588,7 @@ where
                 } else {
                     ExprKind::Amend { src: Box::new(a), val: Box::new(b) }
                 }
-            })).or(unary);
+            })).or(pre_assign);
 
         assign.boxed()
     })

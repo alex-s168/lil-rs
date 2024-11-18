@@ -10,7 +10,7 @@ pub enum Token<'src> {
 
     KwEach,
     KwIn,
-    KvWhile,
+    KwWhile,
     KwEnd,
     KwOn,
     KwDo,
@@ -108,7 +108,7 @@ impl std::fmt::Display for Token<'_> {
 
             Token::KwEach => { "each".to_string() }
             Token::KwIn => { "in".to_string() }
-            Token::KvWhile => { "while".to_string() }
+            Token::KwWhile => { "while".to_string() }
             Token::KwEnd => { "end".to_string() }
             Token::KwOn => { "on".to_string() }
             Token::KwDo => { "do".to_string() }
@@ -281,7 +281,7 @@ impl Token<'_> {
         match self {
             Token::KwEach |
             Token::KwIn |
-            Token::KvWhile |
+            Token::KwWhile |
             Token::KwEnd |
             Token::KwOn |
             Token::KwDo |
@@ -357,10 +357,11 @@ pub fn lexer<'src>() ->
         .boxed();
 
     let alpha = one_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ");
+    let digit = one_of("0123456789");
 
-    let ident = alpha.or(just('_')).or(just('?'))
-        .repeated()
-        .at_least(1)
+    let ident = alpha.clone().or(just('_')).or(just('?'))
+        .then(alpha.clone().or(just('_')).or(digit.clone())
+            .repeated())
         .to_slice()
         .map(|x| Token::Ident(x))
         .boxed();
@@ -384,7 +385,7 @@ pub fn lexer<'src>() ->
 
             text::keyword("each").to(Token::KwEach).boxed(),
             text::keyword("in").to(Token::KwIn).boxed(),
-            text::keyword("while").to(Token::KvWhile).boxed(),
+            text::keyword("while").to(Token::KwWhile).boxed(),
             text::keyword("end").to(Token::KwEnd).boxed(),
             text::keyword("on").to(Token::KwOn).boxed(),
             text::keyword("do").to(Token::KwDo).boxed(),
