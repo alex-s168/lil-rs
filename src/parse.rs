@@ -104,6 +104,10 @@ impl<'src> Expr<'src> {
                     x.iter().for_each(|x| x.traverse(each));
                 }
             }
+
+            ExprKind::LocalAsign { name: _, init } => {
+                init.traverse(each);
+            }
         }
     }
 }
@@ -259,6 +263,11 @@ pub enum ExprKind<'src> {
         was_dot_notation: bool,
     },
 
+    LocalAsign {
+        name: &'src str,
+        init: Box<Expr<'src>>,
+    },
+
     /** only if var is lexpr */ 
     Assign {
         var: Box<Expr<'src>>,
@@ -388,11 +397,12 @@ impl<'src> ExprKind<'src> {
             ExprKind::Binary { .. }   |
             ExprKind::Unary { .. }    |
             ExprKind::EmptyList       |
-            ExprKind::SpreadUnary { .. } |
-            ExprKind::ForEach { .. }     |
-            ExprKind::While { .. }       |
-            ExprKind::If { .. }          |
-            ExprKind::Function { .. }    => { false }
+            ExprKind::ForEach { .. }  |
+            ExprKind::While { .. }    |
+            ExprKind::If { .. }       |
+            ExprKind::Function { .. }    |
+            ExprKind::LocalAsign { .. }  |
+            ExprKind::SpreadUnary { .. } => { false }
         }
     }
 }
@@ -440,6 +450,19 @@ where
         }
     }
 
+    macro_rules! none_of {
+        ( $($x:pat),+ ) => {
+            choice((
+                $( select_ref! { $x => 1 }, )+
+                select_ref! { _ => 0 }
+            ))
+                .validate(|x, e, ctx| {
+                    if x != 0 { ctx.emit(Rich::custom(e.span(), "".to_string())) }
+                    x
+                })
+        }
+    }
+
     recursive::<_, _, extra::Err<Rich<'src, lex::Token<'src>>>, _, _>(|parse_expr| {
         let ident = select_ref! { lex::Token::Ident(s) => ExprKind::Ident(s) }
                 .labelled("identifier");
@@ -449,6 +472,101 @@ where
 
         let num = select_ref! { lex::Token::Num(n) => ExprKind::Num(*n) }
                 .labelled("number");
+
+        let atom_each = simple!(KwEach)
+            .ignore_then(padded!(select_ref! { lex::Token::Ident(s) => *s })
+                .repeated()
+                .collect::<Vec<_>>())
+            .then_ignore(padded!(simple!(KwIn)))
+            .then(parse_expr.clone())
+            .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
+                    .or_not()))
+            .then(parse_expr.clone()
+                .repeated()
+                .collect::<Vec<_>>())
+            .then_ignore(padded!(simple!(KwEnd)))
+            .map(|((idents, arr), body)| ExprKind::ForEach {
+                vars: idents,
+                arr: Box::new(arr),
+                body,
+            }).boxed();
+
+        let atom_on = simple!(KwOn)
+            .ignore_then(padded!(select_ref! { lex::Token::Ident(s) => *s }))
+            .then(padded!(select_ref! { lex::Token::Ident(s) => *s })
+                .repeated()
+                .collect::<Vec<&'src str>>()
+                .labelled("function arguments")
+                .recover_with(via_parser(
+                    none_of!(lex::Token::KwDo, lex::Token::KwEnd)
+                    .map(|_| Vec::<&'src str>::new())))
+            )
+            .then(padded!(select_ref! { lex::Token::Dot => () })
+                .repeated()
+                .exactly(3)
+                .recover_with(via_parser(padded!(select_ref! { lex::Token::Dot => () })
+                    .repeated()
+                    .at_least(1)))
+                .ignore_then(padded!(select_ref! { lex::Token::Ident(s) => *s }))
+                .labelled("function var arg argument")
+                .or_not())
+            .then_ignore(padded!(simple!(KwDo)))
+            .then(parse_expr.clone()
+                .repeated()
+                .collect::<Vec<_>>())
+            .then_ignore(padded!(simple!(KwEnd)))
+            .map(|(((name, args), var_arg), body)| ExprKind::Function {
+                name,
+                args,
+                var_arg,
+                body,
+            }).labelled("function declaration").boxed();
+
+        let atom_if = simple!(KwIf)
+            .ignore_then(parse_expr.clone())
+            .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
+                        .or_not()))
+            .then(parse_expr.clone()
+                .repeated()
+                .collect::<Vec<_>>())
+            // else-ifs
+            .then(padded!(simple!(KwElseIf))
+                .ignore_then(parse_expr.clone())
+                .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
+                            .or_not()))
+                .then(parse_expr.clone()
+                    .repeated()
+                    .collect::<Vec<_>>())
+                .repeated()
+                .collect::<Vec<_>>())
+            // else
+            .then(padded!(simple!(KwElse))
+                .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
+                            .or_not()))
+                .ignore_then(parse_expr.clone()
+                    .repeated()
+                    .collect::<Vec<_>>())
+                .or_not())
+            .then_ignore(padded!(simple!(KwEnd)))
+            .map(|(((cond, body), else_ifs), else_body)| ExprKind::If {
+                condition: Box::new(cond),
+                then_body: body,
+                else_ifs,
+                else_body,
+            }).boxed();
+
+        let atom_while = simple!(KwWhile)
+            .ignore_then(parse_expr.clone())
+            .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
+                    .or_not()))
+            .then(parse_expr.clone()
+                .repeated()
+                .collect::<Vec<_>>())
+            .then_ignore(padded!(simple!(KwEnd)))
+            .map(|(cond, body)| ExprKind::While {
+                cond: Box::new(cond),
+                body,
+            }).boxed();
 
         let atom = with_src!(padded!(choice((
             with_src!(ident.clone())
@@ -474,91 +592,10 @@ where
                     padded!(simple!(ParenClose)))
                 .map(|x| ExprKind::Wrap(Box::new(x))),
 
-            simple!(KwEach)
-                .ignore_then(padded!(select_ref! { lex::Token::Ident(s) => *s })
-                    .repeated()
-                    .collect::<Vec<_>>())
-                .then_ignore(padded!(simple!(KwIn)))
-                .then(parse_expr.clone())
-                .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
-                    .or_not()))
-                .then(parse_expr.clone()
-                    .repeated()
-                    .collect::<Vec<_>>())
-                .then_ignore(padded!(simple!(KwEnd)))
-                .map(|((idents, arr), body)| ExprKind::ForEach {
-                    vars: idents,
-                    arr: Box::new(arr),
-                    body,
-                }),
-
-            simple!(KwWhile)
-                .ignore_then(parse_expr.clone())
-                .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
-                    .or_not()))
-                .then(parse_expr.clone()
-                    .repeated()
-                    .collect::<Vec<_>>())
-                .then_ignore(padded!(simple!(KwEnd)))
-                .map(|(cond, body)| ExprKind::While {
-                    cond: Box::new(cond),
-                    body,
-                }),
-
-            simple!(KwOn)
-                .ignore_then(padded!(select_ref! { lex::Token::Ident(s) => *s }))
-                .then(padded!(select_ref! { lex::Token::Ident(s) => *s })
-                    .repeated()
-                    .collect::<Vec<_>>())
-                .then(padded!(select_ref! { lex::Token::Dot => () })
-                    .repeated()
-                    .exactly(3)
-                    .ignore_then(padded!(select_ref! { lex::Token::Ident(s) => *s }))
-                    .or_not())
-                .then_ignore(padded!(simple!(KwDo)))
-                .then(parse_expr.clone()
-                    .repeated()
-                    .collect::<Vec<_>>())
-                .then_ignore(padded!(simple!(KwEnd)))
-                .map(|(((name, args), var_arg), body)| ExprKind::Function {
-                    name,
-                    args,
-                    var_arg,
-                    body,
-                }),
-
-            simple!(KwIf)
-                .ignore_then(parse_expr.clone())
-                .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
-                        .or_not()))
-                .then(parse_expr.clone()
-                    .repeated()
-                    .collect::<Vec<_>>())
-                // else-ifs
-                .then(padded!(simple!(KwElseIf))
-                    .ignore_then(parse_expr.clone())
-                    .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
-                            .or_not()))
-                    .then(parse_expr.clone()
-                        .repeated()
-                        .collect::<Vec<_>>())
-                    .repeated()
-                    .collect::<Vec<_>>())
-                // else
-                .then(padded!(simple!(KwElse))
-                    .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
-                            .or_not()))
-                    .ignore_then(parse_expr.clone()
-                        .repeated()
-                        .collect::<Vec<_>>())
-                    .or_not())
-                .then_ignore(padded!(simple!(KwEnd)))
-                .map(|(((cond, body), else_ifs), else_body)| ExprKind::If {
-                    condition: Box::new(cond),
-                    then_body: body,
-                    else_ifs,
-                    else_body,
-                }),
+            atom_while,
+            atom_each,
+            atom_on,
+            atom_if,
         ))));
 
         let arr_access = atom.clone().foldl_with(padded!(parse_expr.clone()
@@ -629,6 +666,7 @@ where
                     }, into_range!(e))
                 });
 
+        // TODO: should?? make assign foldl (bc of ammend)
         let pre_assign = spread;
         let assign = with_src!(pre_assign.clone()
             .then_ignore(padded!(simple!(Colon)))
@@ -641,6 +679,15 @@ where
                 }
             })).or(pre_assign);
 
-        assign.boxed()
+        let local_assign = with_src!(padded!(simple!(KwLocal))
+            .ignore_then(select_ref! { lex::Token::Ident(s) => *s })
+            .then_ignore(padded!(simple!(Colon)))
+            .then(assign.clone())
+            .map(|(name, init)| ExprKind::LocalAsign {
+                name,
+                init: Box::new(init)
+            })).or(assign);
+
+        local_assign.labelled("expression").boxed()
     })
 }
