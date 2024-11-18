@@ -89,8 +89,20 @@ impl<'src> Expr<'src> {
                 body.iter().for_each(|x| x.traverse(each));
             }
 
-            ExprKind::Function { name: _, args: _, body } => {
+            ExprKind::Function { name: _, args: _, var_arg: _, body } => {
                 body.iter().for_each(|x| x.traverse(each));
+            }
+
+            ExprKind::If { condition, then_body, else_ifs, else_body } => {
+                condition.traverse(each);
+                then_body.iter().for_each(|x| x.traverse(each));
+                else_ifs.iter().for_each(|(a,b)| {
+                    a.traverse(each);
+                    b.iter().for_each(|x| x.traverse(each));
+                });
+                if let Some(x) = else_body {
+                    x.iter().for_each(|x| x.traverse(each));
+                }
             }
         }
     }
@@ -303,8 +315,16 @@ pub enum ExprKind<'src> {
     Function {
         name: &'src str,
         args: Vec<&'src str>,
+        var_arg: Option<&'src str>,
         body: Vec<Expr<'src>>,
-    }
+    },
+
+    If {
+        condition: Box<Expr<'src>>,
+        then_body: Vec<Expr<'src>>,
+        else_ifs:  Vec<(Expr<'src>, Vec<Expr<'src>>)>,
+        else_body: Option<Vec<Expr<'src>>>,
+    },
 }
 
 impl<'src> ExprKind<'src> {
@@ -350,6 +370,8 @@ impl<'src> ExprKind<'src> {
             // this is NOT a LEXPR, because  (foo)[1]:44  should ammend instead of assign!
             ExprKind::Wrap(_) => { false },
 
+            ExprKind::Call { func: _, args } => { args.len() == 1 },
+
             ExprKind::Err |
             ExprKind::Num(_) |
             ExprKind::Str(_) => { false },
@@ -360,27 +382,17 @@ impl<'src> ExprKind<'src> {
                 arr.kind.is_lexpr()
             }
 
-            ExprKind::Assign { .. } => { false },
-
-            ExprKind::Amend { .. } => { false },
-
-            // this is weird, but it ammends in the official lil linterpreter
-            ExprKind::EachElem { .. } => { false },
-
-            ExprKind::Binary { .. } => { false },
-            ExprKind::Unary { .. } => { false },
-
-            ExprKind::EmptyList => { false },
-
-            ExprKind::Call { func: _, args } => { args.len() == 1 },
-
-            ExprKind::SpreadUnary { .. } => { false },
-            
-            ExprKind::ForEach { .. } => { false },
-
-            ExprKind::While { .. } => { false },
-
-            ExprKind::Function { .. } => { false }
+            ExprKind::Assign { .. }   |
+            ExprKind::Amend { .. }    |
+            ExprKind::EachElem { .. } | // this is weird, but it ammends in the official lil linterpreter
+            ExprKind::Binary { .. }   |
+            ExprKind::Unary { .. }    |
+            ExprKind::EmptyList       |
+            ExprKind::SpreadUnary { .. } |
+            ExprKind::ForEach { .. }     |
+            ExprKind::While { .. }       |
+            ExprKind::If { .. }          |
+            ExprKind::Function { .. }    => { false }
         }
     }
 }
@@ -498,15 +510,54 @@ where
                 .then(padded!(select_ref! { lex::Token::Ident(s) => *s })
                     .repeated()
                     .collect::<Vec<_>>())
+                .then(padded!(select_ref! { lex::Token::Dot => () })
+                    .repeated()
+                    .exactly(3)
+                    .ignore_then(padded!(select_ref! { lex::Token::Ident(s) => *s }))
+                    .or_not())
                 .then_ignore(padded!(simple!(KwDo)))
                 .then(parse_expr.clone()
                     .repeated()
                     .collect::<Vec<_>>())
                 .then_ignore(padded!(simple!(KwEnd)))
-                .map(|((name, args), body)| ExprKind::Function {
+                .map(|(((name, args), var_arg), body)| ExprKind::Function {
                     name,
                     args,
+                    var_arg,
                     body,
+                }),
+
+            simple!(KwIf)
+                .ignore_then(parse_expr.clone())
+                .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
+                        .or_not()))
+                .then(parse_expr.clone()
+                    .repeated()
+                    .collect::<Vec<_>>())
+                // else-ifs
+                .then(padded!(simple!(KwElseIf))
+                    .ignore_then(parse_expr.clone())
+                    .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
+                            .or_not()))
+                    .then(parse_expr.clone()
+                        .repeated()
+                        .collect::<Vec<_>>())
+                    .repeated()
+                    .collect::<Vec<_>>())
+                // else
+                .then(padded!(simple!(KwElse))
+                    .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
+                            .or_not()))
+                    .ignore_then(parse_expr.clone()
+                        .repeated()
+                        .collect::<Vec<_>>())
+                    .or_not())
+                .then_ignore(padded!(simple!(KwEnd)))
+                .map(|(((cond, body), else_ifs), else_body)| ExprKind::If {
+                    condition: Box::new(cond),
+                    then_body: body,
+                    else_ifs,
+                    else_body,
                 }),
         ))));
 
