@@ -138,6 +138,11 @@ impl<'src> Expr<'src> {
                 clauses.iter().for_each(|x| x.traverse(each));
                 table.traverse(each);
             }
+
+            ExprKind::Insert { columns, data, into } => {
+                data.iter().for_each(|x| x.traverse(each));
+                into.as_ref().map(|x| x.traverse(each));
+            }
         }
     }
 }
@@ -404,6 +409,12 @@ pub enum ExprKind<'src> {
         clauses: Vec<Expr<'src>>,
         table: Box<Expr<'src>>,
     },
+
+    Insert {
+        columns: Vec<Cow<'src, str>>,
+        data: Vec<Expr<'src>>,
+        into: Option<Box<Expr<'src>>>
+    },
 }
 
 impl<'src> ExprKind<'src> {
@@ -477,6 +488,7 @@ impl<'src> ExprKind<'src> {
             ExprKind::Select { .. }      |
             ExprKind::Update { .. }      |
             ExprKind::Extract { .. }     |
+            ExprKind::Insert { .. }      |
             ExprKind::SpreadUnary { .. } => { false }
         }
     }
@@ -553,6 +565,12 @@ where
 
         let num = select_ref! { lex::Token::Num(n) => ExprKind::Num(*n) }
                 .labelled("number");
+
+        let cow_id_or_str = ident_tok.clone()
+            .map(|x| Cow::from(x))
+            .or(str_tok.clone()
+                .map(|x| Cow::from(x)))
+            .labelled("identifier / string");
 
         let atom_each = simple!(KwEach)
             .ignore_then(padded!(ident_tok.clone())
@@ -666,10 +684,7 @@ where
                 x
             });
 
-        let opt_kv = ident_tok.clone()
-            .map(|x| Cow::from(x))
-            .or(str_tok.clone()
-                .map(|x| Cow::from(x)))
+        let opt_kv = cow_id_or_str.clone()
             .then_ignore(padded!(simple!(Colon)))
             .or_not()
             .then(parse_expr.clone())
@@ -706,6 +721,23 @@ where
             .then(parse_expr.clone())
             .map(|((out,clauses),table)| ExprKind::Extract { out: Box::new(out), clauses, table: Box::new(table) })
             .labelled("'extract' query")
+            .boxed()
+            ;
+
+        let insert = simple!(KwInsert)
+            .ignore_then(padded!(cow_id_or_str.clone())
+                .repeated()
+                .collect::<Vec<_>>())
+            .then_ignore(padded!(simple!(KwWith)))
+            .then(parse_expr.clone()
+                .repeated()
+                .collect::<Vec<_>>())
+            .then(padded!(simple!(KwEnd)).to(None)
+                .or(padded!(simple!(KwInto))
+                    .ignore_then(parse_expr.clone())
+                    .map(|x| Some(Box::new(x)))))
+            .map(|((columns,data),into)| ExprKind::Insert { columns, data, into })
+            .labelled("insert")
             .boxed()
             ;
 
@@ -753,6 +785,7 @@ where
             query_update,
             query_select,
             query_extract,
+            insert,
         )))).labelled("atom");
 
         let arr_access = atom.clone().foldl_with(padded!(parse_expr.clone()
