@@ -463,6 +463,15 @@ pub fn lexer<'src>() ->
             text::whitespace()
                 .at_least(1)
                 .to(Token::Padding).boxed(),
+
+            just('#')
+                .then(any()
+                    .and_is(text::newline().not())
+                    .repeated())
+                .then(text::newline()
+                     .or_not())
+                .to(Token::Padding)
+                .boxed(),
         ])
         .map_with(|t, e| (t, e.span()))
         .repeated()

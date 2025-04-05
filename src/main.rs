@@ -14,6 +14,7 @@ fn failure(
     extra_labels: impl IntoIterator<Item = (String, SimpleSpan)>,
     src: &str,
 ) {
+    // TODO: color tokens in err
     let fname = "example";
     Report::build(kind, (fname, label.1.start..label.1.end))
         .with_message(&msg)
@@ -26,7 +27,7 @@ fn failure(
                 .with_message(label2.0)
         }))
         .finish()
-        .print(sources([(fname, src)]))
+        .eprint(sources([(fname, src)]))
         .unwrap();
 }
 

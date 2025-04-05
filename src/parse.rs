@@ -1,6 +1,7 @@
 use chumsky::{input::BorrowInput, prelude::*};
 use crate::lex;
 use std::ops::Range;
+use std::borrow::Cow;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expr<'src> {
@@ -35,7 +36,6 @@ impl<'src> Expr<'src> {
         match &self.kind {
             ExprKind::Wrap(x) => { x.traverse(each) },
 
-            ExprKind::Err       |
             ExprKind::Num(_)    |
             ExprKind::Ident(_)  |
             ExprKind::Str(_)    |
@@ -107,6 +107,36 @@ impl<'src> Expr<'src> {
 
             ExprKind::LocalAsign { name: _, init } => {
                 init.traverse(each);
+            }
+
+            ExprKind::Where { expr } => {
+                expr.traverse(each);
+            }
+
+            ExprKind::OrderBy { expr, dir: _ } => {
+                expr.traverse(each);
+            }
+
+            ExprKind::Group { expr } => {
+                expr.traverse(each);
+            }
+
+            ExprKind::Select { out_fields, clauses, table } => {
+                out_fields.iter().for_each(|(_,x)| x.traverse(each));
+                clauses.iter().for_each(|x| x.traverse(each));
+                table.traverse(each);
+            }
+
+            ExprKind::Update { out_fields, clauses, table } => {
+                out_fields.iter().for_each(|(_,x)| x.traverse(each));
+                clauses.iter().for_each(|x| x.traverse(each));
+                table.traverse(each);
+            }
+
+            ExprKind::Extract { out, clauses, table } => {
+                out.traverse(each);
+                clauses.iter().for_each(|x| x.traverse(each));
+                table.traverse(each);
             }
         }
     }
@@ -249,8 +279,13 @@ fn tok_to_uny(tok: &lex::Token) -> Option<UnaryOp> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum OrderDir {
+    Asc,
+    Desc,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind<'src> {
-    Err,
     Ident(&'src str),
     Num(f64),
     Str(String),
@@ -334,6 +369,41 @@ pub enum ExprKind<'src> {
         else_ifs:  Vec<(Expr<'src>, Vec<Expr<'src>>)>,
         else_body: Option<Vec<Expr<'src>>>,
     },
+
+    Where {
+        expr: Box<Expr<'src>>
+    },
+
+    OrderBy {
+        expr: Box<Expr<'src>>,
+        dir: OrderDir
+    },
+
+    /// "by x"
+    Group {
+        expr: Box<Expr<'src>>,
+    },
+
+    /// clauses are reversed from the original, which means that the first clause in the AST gets executed first
+    Select {
+        out_fields: Vec<(Option<Cow<'src, str>>, Expr<'src>)>,
+        clauses: Vec<Expr<'src>>,
+        table: Box<Expr<'src>>,
+    },
+
+    /// clauses are reversed from the original, which means that the first clause in the AST gets executed first
+    Update {
+        out_fields: Vec<(Option<Cow<'src, str>>, Expr<'src>)>,
+        clauses: Vec<Expr<'src>>,
+        table: Box<Expr<'src>>,
+    },
+
+    /// clauses are reversed from the original, which means that the first clause in the AST gets executed first
+    Extract {
+        out: Box<Expr<'src>>,
+        clauses: Vec<Expr<'src>>,
+        table: Box<Expr<'src>>,
+    },
 }
 
 impl<'src> ExprKind<'src> {
@@ -381,7 +451,6 @@ impl<'src> ExprKind<'src> {
 
             ExprKind::Call { func: _, args } => { args.len() == 1 },
 
-            ExprKind::Err |
             ExprKind::Num(_) |
             ExprKind::Str(_) => { false },
 
@@ -402,6 +471,12 @@ impl<'src> ExprKind<'src> {
             ExprKind::If { .. }       |
             ExprKind::Function { .. }    |
             ExprKind::LocalAsign { .. }  |
+            ExprKind::Where { .. }       |
+            ExprKind::OrderBy { .. }     |
+            ExprKind::Group { .. }       |
+            ExprKind::Select { .. }      |
+            ExprKind::Update { .. }      |
+            ExprKind::Extract { .. }     |
             ExprKind::SpreadUnary { .. } => { false }
         }
     }
@@ -426,9 +501,7 @@ where
 
     macro_rules! padded {
         ($inner:expr) => {
-            white.clone()
-            .ignore_then($inner)
-            .then_ignore(white.clone())
+            $inner.padded_by(white.clone())
         }
     }
 
@@ -447,9 +520,11 @@ where
     macro_rules! simple {
         ($x:ident) => {
             select_ref! { lex::Token::$x => () }
+                .labelled(stringify!($x))
         }
     }
 
+    /// do NOT use this because of poor error messages
     macro_rules! none_of {
         ( $($x:pat),+ ) => {
             choice((
@@ -464,6 +539,12 @@ where
     }
 
     recursive::<_, _, extra::Err<Rich<'src, lex::Token<'src>>>, _, _>(|parse_expr| {
+        let ident_tok = select_ref! { lex::Token::Ident(s) => *s }
+                .labelled("identifier");
+
+        let str_tok = select_ref! { lex::Token::Str(s) => s.clone() }
+                .labelled("string literal");
+
         let ident = select_ref! { lex::Token::Ident(s) => ExprKind::Ident(s) }
                 .labelled("identifier");
 
@@ -474,7 +555,7 @@ where
                 .labelled("number");
 
         let atom_each = simple!(KwEach)
-            .ignore_then(padded!(select_ref! { lex::Token::Ident(s) => *s })
+            .ignore_then(padded!(ident_tok.clone())
                 .repeated()
                 .collect::<Vec<_>>())
             .then_ignore(padded!(simple!(KwIn)))
@@ -492,8 +573,8 @@ where
             }).boxed();
 
         let atom_on = simple!(KwOn)
-            .ignore_then(padded!(select_ref! { lex::Token::Ident(s) => *s }))
-            .then(padded!(select_ref! { lex::Token::Ident(s) => *s })
+            .ignore_then(padded!(ident_tok.clone()))
+            .then(padded!(ident_tok.clone())
                 .repeated()
                 .collect::<Vec<&'src str>>()
                 .labelled("function arguments")
@@ -501,13 +582,13 @@ where
                     none_of!(lex::Token::KwDo, lex::Token::KwEnd)
                     .map(|_| Vec::<&'src str>::new())))
             )
-            .then(padded!(select_ref! { lex::Token::Dot => () })
+            .then(padded!(simple!(Dot))
                 .repeated()
                 .exactly(3)
-                .recover_with(via_parser(padded!(select_ref! { lex::Token::Dot => () })
+                .recover_with(via_parser(padded!(simple!(Dot))
                     .repeated()
                     .at_least(1)))
-                .ignore_then(padded!(select_ref! { lex::Token::Ident(s) => *s }))
+                .ignore_then(padded!(ident_tok.clone()))
                 .labelled("function var arg argument")
                 .or_not())
             .then_ignore(padded!(simple!(KwDo)))
@@ -555,6 +636,79 @@ where
                 else_body,
             }).boxed();
 
+        let query_clause = choice((
+            simple!(KwWhere)
+                .ignore_then(parse_expr.clone())
+                .map(|expr| ExprKind::Where { expr: Box::new(expr) })
+                .labelled("where-clause"),
+
+            simple!(KwOrderBy)
+                .ignore_then(parse_expr.clone())
+                .then(padded!(choice((
+                    simple!(KwAsc).to(OrderDir::Asc),
+                    simple!(KwDesc).to(OrderDir::Desc)
+                ))))
+                .map(|(expr,dir)| ExprKind::OrderBy { expr: Box::new(expr), dir })
+                .labelled("orderby-clause"),
+
+            simple!(KwBy)
+                .ignore_then(parse_expr.clone())
+                .map(|expr| ExprKind::Group { expr: Box::new(expr) })
+                .labelled("by-clause")
+        )).boxed();
+
+        let query_clauses = with_src!(padded!(query_clause))
+            .repeated()
+            .collect::<Vec<_>>()
+            .map(|x| {
+                let mut x = x;
+                x.reverse();
+                x
+            });
+
+        let opt_kv = ident_tok.clone()
+            .map(|x| Cow::from(x))
+            .or(str_tok.clone()
+                .map(|x| Cow::from(x)))
+            .then_ignore(padded!(simple!(Colon)))
+            .or_not()
+            .then(parse_expr.clone())
+            .labelled("'key:value' or 'value'")
+            .boxed();
+
+        let query_select = simple!(KwSelect)
+            .ignore_then(opt_kv.clone()
+                .repeated()
+                .collect::<Vec<_>>())
+            .then(query_clauses.clone())
+            .then_ignore(padded!(simple!(KwFrom)))
+            .then(parse_expr.clone())
+            .map(|((out_fields,clauses),table)| ExprKind::Select { out_fields, clauses, table: Box::new(table) })
+            .labelled("'select' query")
+            .boxed();
+
+        let query_update = simple!(KwUpdate)
+            .ignore_then(opt_kv.clone()
+                .repeated()
+                .collect::<Vec<_>>())
+            .then(query_clauses.clone())
+            .then_ignore(padded!(simple!(KwFrom)))
+            .then(parse_expr.clone())
+            .map(|((out_fields,clauses),table)| ExprKind::Update { out_fields, clauses, table: Box::new(table) })
+            .labelled("'update' query")
+            .boxed()
+            ;
+
+        let query_extract = simple!(KwExtract)
+            .ignore_then(parse_expr.clone())
+            .then(query_clauses.clone())
+            .then_ignore(padded!(simple!(KwFrom)))
+            .then(parse_expr.clone())
+            .map(|((out,clauses),table)| ExprKind::Extract { out: Box::new(out), clauses, table: Box::new(table) })
+            .labelled("'extract' query")
+            .boxed()
+            ;
+
         let atom_while = simple!(KwWhile)
             .ignore_then(parse_expr.clone())
             .then_ignore(padded!(simple!(KwDo)  // non standard feature: allow use of `do` to avoid ambiguity
@@ -596,7 +750,10 @@ where
             atom_each,
             atom_on,
             atom_if,
-        ))));
+            query_update,
+            query_select,
+            query_extract,
+        )))).labelled("atom");
 
         let arr_access = atom.clone().foldl_with(padded!(parse_expr.clone()
                 .or_not()
@@ -680,7 +837,7 @@ where
             })).or(pre_assign);
 
         let local_assign = with_src!(padded!(simple!(KwLocal))
-            .ignore_then(select_ref! { lex::Token::Ident(s) => *s })
+            .ignore_then(ident_tok.clone())
             .then_ignore(padded!(simple!(Colon)))
             .then(assign.clone())
             .map(|(name, init)| ExprKind::LocalAsign {
